@@ -1,295 +1,372 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { Toaster, toast } from 'sonner';
 import {
   ArrowDownTrayIcon,
   CloudArrowUpIcon,
-  DocumentTextIcon,
   MagnifyingGlassIcon,
-  FunnelIcon,
   ArrowPathIcon,
   PencilSquareIcon,
   CheckIcon,
   XMarkIcon,
-  EnvelopeIcon
+  BoltIcon,
+  TrashIcon,
 } from '@heroicons/react/24/outline';
-import api, { syncEmail } from './api';
+import api from './api';
 import './InvoicesDashboard.css';
 
+const TIPO_LABEL = { '01': 'Factura', '03': 'Boleta', '07': 'N. Crédito', '08': 'N. Débito' };
+const TIPO_COLOR = { '01': 'badge-factura', '03': 'badge-boleta', '07': 'badge-nc', '08': 'badge-nd' };
+
 function InvoicesDashboard() {
-  const [records, setRecords] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [uploading, setUploading] = useState(false);
-  const [syncing, setSyncing] = useState(false);
-  
-  const [editingId, setEditingId] = useState(null);
-  const [editForm, setEditForm] = useState({});
+  const [records, setRecords]           = useState([]);
+  const [loading, setLoading]           = useState(false);
+  const [searchTerm, setSearch]         = useState('');
+  const [uploading, setUploading]       = useState(false);
+  const [runningSunat, setRunningSunat] = useState(false);
+  const [editingId, setEditingId]       = useState(null);
+  const [editForm, setEditForm]         = useState({});
+  const [sunatRecords, setSunatRecords] = useState([]);
+  const [lastRunErrors, setLastRunErrors] = useState(null);
+  const fileRef = useRef(null);
 
   const fetchInvoices = async () => {
     setLoading(true);
     try {
-      const response = await api.get('/invoices');
-      setRecords(Array.isArray(response.data) ? response.data : []);
-    } catch (error) {
+      const { data } = await api.get('/invoices');
+      setRecords(Array.isArray(data) ? data : []);
+    } catch {
       toast.error('Error al conectar con la base de datos');
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    fetchInvoices();
-  }, []);
+  const fetchSunatRecords = async () => {
+    try {
+      const { data } = await api.get('/sunat-comprobantes');
+      setSunatRecords(Array.isArray(data) ? data : []);
+    } catch {
+      // silencioso — no interrumpir carga principal
+    }
+  };
 
-  const handleUpload = async (event) => {
-    const files = Array.from(event.target.files || []);
-    if (files.length === 0) return;
+  useEffect(() => { fetchInvoices(); fetchSunatRecords(); }, []);
 
+  const clearInvoices = async () => {
+    if (!window.confirm('¿Eliminar todos los registros de Extracciones? Esta acción no se puede deshacer.')) return;
+    try {
+      await api.delete('/invoices');
+      toast.success('Extracciones eliminadas');
+      fetchInvoices();
+    } catch {
+      toast.error('Error al limpiar la tabla');
+    }
+  };
+
+  const runSunat = async () => {
+    setRunningSunat(true);
+    const tid = toast.loading('Conectando con SUNAT… esto puede tardar varios minutos');
+    try {
+      const { data } = await api.post('/run-sunat');
+      setLastRunErrors(data.errores || 0);
+      toast.success(
+        `✓ ${data.guardados} comprobante(s) descargados y guardados en Drive` +
+        (data.errores > 0 ? ` · ${data.errores} con error` : ''),
+        { id: tid, duration: 7000 }
+      );
+      fetchInvoices();
+      fetchSunatRecords();
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.detail || 'Error al ejecutar SUNAT',
+        { id: tid }
+      );
+    } finally {
+      setRunningSunat(false);
+    }
+  };
+
+  const handleUpload = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
     setUploading(true);
-    const toastId = toast.loading(`Procesando ${files.length} archivo(s)...`);
-
+    const tid = toast.loading(`Procesando ${files.length} archivo(s)…`);
     try {
       for (const file of files) {
-        const formData = new FormData();
-        formData.append('file', file);
-        await api.post('/upload', formData, {
-          headers: { 'Content-Type': 'multipart/form-data' },
-        });
+        const fd = new FormData();
+        fd.append('file', file);
+        await api.post('/upload', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
       }
-      toast.success('¡Procesamiento masivo completado!', { id: toastId });
+      toast.success('Archivos procesados correctamente', { id: tid });
       fetchInvoices();
-    } catch (error) {
-      toast.error('Hubo un error en la carga', { id: toastId });
+    } catch {
+      toast.error('Error al procesar los archivos', { id: tid });
     } finally {
       setUploading(false);
-      event.target.value = '';
+      if (fileRef.current) fileRef.current.value = '';
     }
   };
 
-  const handleSyncEmail = async () => {
-    setSyncing(true);
-    const toastId = toast.loading('Sincronizando correos... esto puede tardar unos segundos');
-    try {
-      await syncEmail();
-      toast.success('¡Sincronización completada!', { id: toastId });
-      fetchInvoices();
-    } catch (error) {
-      console.error(error);
-      toast.error('Error al sincronizar el correo. Verifica tu conexión.', { id: toastId });
-    } finally {
-      setSyncing(false);
-    }
-  };
-
-  const filteredRecords = useMemo(() => {
+  const filtered = useMemo(() => {
+    const q = searchTerm.toLowerCase();
     return records.filter(r =>
-      (r.nombre_razon_social || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (r.ruc || '').includes(searchTerm) ||
-      (r.operacion || '').toLowerCase().includes(searchTerm.toLowerCase())
+      (r.ruc || '').includes(q) ||
+      (r.serie || '').toLowerCase().includes(q) ||
+      (r.numero_comprobante || '').includes(q) ||
+      (TIPO_LABEL[r.tipo_comprobante] || '').toLowerCase().includes(q)
     );
   }, [records, searchTerm]);
 
-  const stats = useMemo(() => {
-    const total = records.reduce((acc, r) => acc + (parseFloat(r.importe) || 0), 0);
-    const tax = records.reduce((acc, r) => acc + (parseFloat(r.monto_impuesto) || 0), 0);
-    return { total, tax, count: records.length };
-  }, [records]);
+  const stats = useMemo(() => ({
+    total:    records.length,
+    facturas: records.filter(r => r.tipo_comprobante === '01').length,
+    boletas:  records.filter(r => r.tipo_comprobante === '03').length,
+  }), [records]);
 
-  const startEdit = (invoice) => {
-    setEditingId(invoice.id);
-    setEditForm({ ...invoice });
-  };
+  const sunatStats = useMemo(() => ({
+    total:   sunatRecords.length,
+    pdfs:    sunatRecords.filter(r => r.drive_pdf_url).length,
+    xmls:    sunatRecords.filter(r => r.drive_xml_url).length,
+    errores: lastRunErrors,
+    fecha:   sunatRecords[0]?.created_at
+      ? new Date(sunatRecords[0].created_at).toLocaleDateString('es-PE', { day:'2-digit', month:'2-digit', year:'numeric' })
+      : null,
+  }), [sunatRecords, lastRunErrors]);
 
-  const cancelEdit = () => {
-    setEditingId(null);
-    setEditForm({});
-  };
-
-  const handleEditChange = (field, value) => {
-    setEditForm(prev => ({ ...prev, [field]: value }));
-  };
+  const startEdit  = (inv) => { setEditingId(inv.id); setEditForm({ ...inv }); };
+  const cancelEdit = ()    => { setEditingId(null); setEditForm({}); };
+  const onField    = (f,v) => setEditForm(p => ({ ...p, [f]: v }));
 
   const saveEdit = async () => {
     try {
-      await api.put(`/invoices/${editingId}`, editForm);
+      await api.put(`/invoices/${editingId}`, {
+        ruc: editForm.ruc,
+        tipo_comprobante: editForm.tipo_comprobante,
+        serie: editForm.serie,
+        numero_comprobante: editForm.numero_comprobante,
+      });
       toast.success('Cambios guardados');
-      setEditingId(null);
+      cancelEdit();
       fetchInvoices();
-    } catch (error) {
+    } catch {
       toast.error('No se pudo actualizar');
     }
   };
 
   const exportExcel = () => {
-    const data = filteredRecords.map(r => ({
-      'Empresa': r.nombre_razon_social,
-      'RUC': r.ruc,
-      'Factura': r.operacion,
-      'Fecha': r.fecha,
-      'Periodo': r.periodo,
-      'Impuesto (IGV)': r.monto_impuesto,
-      'Importe Total': r.importe,
-      'Enlace': r.file_url
+    const rows = filtered.map(r => ({
+      'RUC Emisor':      r.ruc,
+      'Tipo':            TIPO_LABEL[r.tipo_comprobante] || r.tipo_comprobante,
+      'Serie':           r.serie,
+      'N° Comprobante':  r.numero_comprobante,
+      'Archivo':         r.file_url,
     }));
-    const ws = XLSX.utils.json_to_sheet(data);
+    const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Facturas');
-    XLSX.writeFile(wb, 'Reporte_Facturas_IA.xlsx');
+    XLSX.utils.book_append_sheet(wb, ws, 'Comprobantes');
+    XLSX.writeFile(wb, 'Comprobantes_SUNAT.xlsx');
   };
 
   return (
     <div className="dashboard-container">
       <Toaster position="top-right" richColors />
 
-      {/* Header & Actions */}
-      <div className="upload-section">
-        <div>
-          <h1 className="text-3xl font-black tracking-tight">ComprobantePro <span className="text-emerald-500">AI</span></h1>
-          <p className="text-slate-400 text-sm mt-1">Gestión inteligente de comprobantes fiscales</p>
+      {/* ── Header ── */}
+      <div className="header">
+        <div className="header-brand">
+          <h1 className="dashboard-title">
+            Comprob<span className="title-accent">Auto</span>
+            <span className="title-tag">SUNAT</span>
+          </h1>
+          <p className="dashboard-subtitle">Registro automatizado de comprobantes electrónicos</p>
         </div>
 
-        <div className="flex gap-3">
-          <button onClick={fetchInvoices} className="btn-primary" style={{ background: '#1e293b' }}>
-            <ArrowPathIcon className={`h-5 w-5 ${loading ? 'animate-spin' : ''}`} />
+        <div className="header-actions">
+          <button className="btn btn-ghost" onClick={fetchInvoices} title="Actualizar">
+            <ArrowPathIcon style={{ width: 16, height: 16, flexShrink: 0, animation: loading ? 'spin 1s linear infinite' : 'none' }} />
           </button>
 
-          <label className="btn-primary cursor-pointer">
-            <CloudArrowUpIcon className="h-5 w-5" />
-            {uploading ? 'Procesando...' : 'Subir Comprobantes'}
-            <input type="file" multiple className="hidden" onChange={handleUpload} disabled={uploading} />
-          </label>
-
-          <button 
-            onClick={handleSyncEmail} 
-            className="btn-primary" 
-            style={{ background: '#8b5cf6' }} 
-            disabled={syncing}
+          <button
+            className="btn btn-sunat"
+            onClick={runSunat}
+            disabled={runningSunat}
+            title="Descargar comprobantes del Excel desde SUNAT"
           >
-            <EnvelopeIcon className={`h-5 w-5 ${syncing ? 'animate-pulse' : ''}`} />
-            {syncing ? 'Sincronizando...' : 'Sincronizar Email'}
+            <BoltIcon style={{ width: 16, height: 16, flexShrink: 0, animation: runningSunat ? 'spin 1s linear infinite' : 'none' }} />
+            {runningSunat ? 'Ejecutando…' : 'Ejecutar SUNAT'}
           </button>
 
-          <button onClick={exportExcel} className="btn-primary" style={{ background: '#3b82f6' }}>
-            <ArrowDownTrayIcon className="h-5 w-5" />
+          <button
+            className="btn btn-upload"
+            onClick={() => fileRef.current?.click()}
+            disabled={uploading}
+          >
+            <CloudArrowUpIcon style={{ width: 16, height: 16, flexShrink: 0 }} />
+            {uploading ? 'Procesando…' : 'Subir Comprobantes'}
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            multiple
+            accept=".xlsx,.txt,.pdf,.jpg,.jpeg,.png"
+            style={{ display: 'none' }}
+            onChange={handleUpload}
+          />
+
+          <button className="btn btn-excel" onClick={exportExcel}>
+            <ArrowDownTrayIcon style={{ width: 16, height: 16, flexShrink: 0 }} />
             Exportar Excel
           </button>
         </div>
       </div>
 
-      {/* Stats Cards */}
+      {/* ── Stats ── */}
       <div className="stats-grid">
-        <div className="glass-card stat-card">
-          <span className="text-muted text-xs uppercase font-bold">Importe Total</span>
-          <span className="stat-value">S/ {stats.total.toLocaleString()}</span>
+        <div className="stat-card stat-card-total">
+          <div className="stat-label">Total Comprobantes</div>
+          <div className="stat-value">{stats.total}</div>
         </div>
-        <div className="glass-card stat-card">
-          <span className="text-muted text-xs uppercase font-bold">Monto Impuesto Acumulado</span>
-          <span className="stat-value" style={{ background: 'linear-gradient(to right, #3b82f6, #8b5cf6)', WebkitBackgroundClip: 'text' }}>
-            S/ {stats.tax.toLocaleString()}
-          </span>
+        <div className="stat-card stat-card-factura">
+          <div className="stat-label">Facturas</div>
+          <div className="stat-value green">{stats.facturas}</div>
         </div>
-        <div className="glass-card stat-card">
-          <span className="text-muted text-xs uppercase font-bold">Cant. Comprobantes</span>
-          <span className="stat-value">{stats.count}</span>
+        <div className="stat-card stat-card-boleta">
+          <div className="stat-label">Boletas</div>
+          <div className="stat-value blue">{stats.boletas}</div>
         </div>
       </div>
 
-      {/* Table Container */}
-      <div className="glass-card p-6">
-        <div className="flex justify-between items-center mb-6">
-          <div className="search-container">
-            <MagnifyingGlassIcon className="search-icon" />
+      {/* ── Table ── */}
+      <div className="table-card">
+        <div className="table-toolbar">
+          <div className="search-wrap">
+            <MagnifyingGlassIcon style={{ width: 14, height: 14 }} />
             <input
               type="text"
-              placeholder="Buscar por Empresa, RUC o Factura..."
               className="search-input"
+              placeholder="Buscar por RUC, Serie, N° o Tipo…"
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              onChange={e => setSearch(e.target.value)}
             />
           </div>
-          <div className="flex items-center gap-2 text-slate-400 text-sm">
-            <FunnelIcon className="h-4 w-4" />
-            <span>Filtrando {filteredRecords.length} de {records.length}</span>
-          </div>
+          <button className="btn btn-clear" onClick={clearInvoices} title="Eliminar todas las extracciones">
+              <TrashIcon style={{ width: 14, height: 14, flexShrink: 0 }} />
+              Limpiar
+            </button>
+          <span className="record-count">{filtered.length} / {records.length} registros</span>
         </div>
 
-        <div className="main-table-container">
-          <table className="premium-table">
+        <div className="table-wrapper">
+          <table className="comp-table">
             <thead>
               <tr>
-                <th>Emisor / Razón Social</th>
-                <th>RUC</th>
-                <th>Operación</th>
-                <th>Fecha</th>
-                <th>Importe</th>
-                <th>Monto Impuesto</th>
+                <th>RUC Emisor</th>
+                <th>Tipo</th>
+                <th>Serie</th>
+                <th>N° Comprobante</th>
                 <th>Acciones</th>
               </tr>
             </thead>
             <tbody>
-              {filteredRecords.map((invoice) => (
-                <tr key={invoice.id}>
-                  <td className="font-bold text-emerald-400">
-                    {editingId === invoice.id ? (
-                      <input className="edit-input-mini" value={editForm.nombre_razon_social || ''} onChange={(e) => handleEditChange('nombre_razon_social', e.target.value)} />
-                    ) : (invoice.nombre_razon_social || '---')}
+              {filtered.map(inv => (
+                <tr key={inv.id}>
+                  {/* RUC */}
+                  <td className="cell-ruc">
+                    {editingId === inv.id
+                      ? <input className="edit-input" value={editForm.ruc || ''} onChange={e => onField('ruc', e.target.value)} />
+                      : inv.ruc || '—'}
                   </td>
-                  <td className="text-slate-300">
-                    {editingId === invoice.id ? (
-                      <input className="edit-input-mini" value={editForm.ruc || ''} onChange={(e) => handleEditChange('ruc', e.target.value)} />
-                    ) : (invoice.ruc || '---')}
-                  </td>
+
+                  {/* Tipo */}
                   <td>
-                    {editingId === invoice.id ? (
-                      <input className="edit-input-mini" value={editForm.operacion || ''} onChange={(e) => handleEditChange('operacion', e.target.value)} />
-                    ) : (<span className="badge badge-info">{invoice.operacion || 'S/N'}</span>)}
+                    {editingId === inv.id
+                      ? (
+                        <select className="edit-input" value={editForm.tipo_comprobante || ''} onChange={e => onField('tipo_comprobante', e.target.value)}>
+                          <option value="01">Factura</option>
+                          <option value="03">Boleta</option>
+                          <option value="07">N. Crédito</option>
+                          <option value="08">N. Débito</option>
+                        </select>
+                      ) : (
+                        <span className={`badge ${TIPO_COLOR[inv.tipo_comprobante] || 'badge-default'}`}>
+                          {TIPO_LABEL[inv.tipo_comprobante] || '—'}
+                        </span>
+                      )}
                   </td>
-                  <td className="text-slate-400">
-                    {editingId === invoice.id ? (
-                      <input type="date" className="edit-input-mini" value={editForm.fecha || ''} onChange={(e) => handleEditChange('fecha', e.target.value)} />
-                    ) : (invoice.fecha || '---')}
+
+                  {/* Serie */}
+                  <td className="cell-serie">
+                    {editingId === inv.id
+                      ? <input className="edit-input" value={editForm.serie || ''} onChange={e => onField('serie', e.target.value)} />
+                      : inv.serie || '—'}
                   </td>
-                  <td className="font-black">
-                    {editingId === invoice.id ? (
-                      <input type="number" className="edit-input-mini" value={editForm.importe || 0} onChange={(e) => handleEditChange('importe', e.target.value)} />
-                    ) : `S/ ${parseFloat(invoice.importe || 0).toFixed(2)}`}
+
+                  {/* N° Comprobante */}
+                  <td className="cell-numero">
+                    {editingId === inv.id
+                      ? <input className="edit-input" value={editForm.numero_comprobante || ''} onChange={e => onField('numero_comprobante', e.target.value)} />
+                      : inv.numero_comprobante || '—'}
                   </td>
-                  <td className="text-slate-400">
-                    {editingId === invoice.id ? (
-                      <input type="number" className="edit-input-mini" value={editForm.monto_impuesto || 0} onChange={(e) => handleEditChange('monto_impuesto', e.target.value)} />
-                    ) : `S/ ${parseFloat(invoice.monto_impuesto || 0).toFixed(2)}`}
-                  </td>
+
+                  {/* Acciones */}
                   <td>
-                    <div className="flex items-center gap-2">
-                      {editingId === invoice.id ? (
+                    <div className="actions-cell">
+                      {editingId === inv.id ? (
                         <>
-                          <button onClick={saveEdit} className="text-emerald-500 hover:scale-110 transition-transform"><CheckIcon className="h-5 w-5" /></button>
-                          <button onClick={cancelEdit} className="text-rose-500 hover:scale-110 transition-transform"><XMarkIcon className="h-5 w-5" /></button>
+                          <button className="btn-action" style={{ color: '#34d399' }} onClick={saveEdit}><CheckIcon style={{ width: 15, height: 15 }} /></button>
+                          <button className="btn-action" style={{ color: '#f87171' }} onClick={cancelEdit}><XMarkIcon style={{ width: 15, height: 15 }} /></button>
                         </>
                       ) : (
-                        <>
-                          <button onClick={() => startEdit(invoice)} className="text-slate-400 hover:text-white"><PencilSquareIcon className="h-5 w-5" /></button>
-                          {invoice.file_url && (
-                            <a href={invoice.file_url} target="_blank" rel="noreferrer" className="text-emerald-500 hover:scale-110 transition-transform"><DocumentTextIcon className="h-5 w-5" /></a>
-                          )}
-                        </>
+                        <button className="btn-action" style={{ color: '#334155' }} onClick={() => startEdit(inv)}><PencilSquareIcon style={{ width: 15, height: 15 }} /></button>
                       )}
                     </div>
                   </td>
                 </tr>
               ))}
-              {filteredRecords.length === 0 && !loading && (
-                <tr>
-                  <td colSpan="7" className="text-center py-20 text-slate-500">
-                    No se encontraron facturas. Comienza subiendo archivos o sincronizando tu correo.
-                  </td>
-                </tr>
+
+              {filtered.length === 0 && !loading && (
+                <tr><td colSpan="5" className="empty-state">No hay comprobantes. Sube archivos para comenzar.</td></tr>
               )}
             </tbody>
           </table>
         </div>
       </div>
+      {/* ── Panel resumen SUNAT ── */}
+      {sunatStats.total > 0 && (
+        <div className="sunat-summary-card">
+          <div className="sunat-summary-header">
+            <BoltIcon style={{ width: 15, height: 15 }} />
+            <span>Última ejecución SUNAT</span>
+            {sunatStats.fecha && <span className="sunat-fecha">{sunatStats.fecha}</span>}
+          </div>
+          <div className="sunat-summary-stats">
+            <div className="sunat-stat">
+              <span className="sunat-stat-value">{sunatStats.total}</span>
+              <span className="sunat-stat-label">Procesados</span>
+            </div>
+            <div className="sunat-stat-divider" />
+            <div className="sunat-stat">
+              <span className="sunat-stat-value sunat-pdf">{sunatStats.pdfs}</span>
+              <span className="sunat-stat-label">PDFs en Drive</span>
+            </div>
+            <div className="sunat-stat-divider" />
+            <div className="sunat-stat">
+              <span className="sunat-stat-value sunat-xml">{sunatStats.xmls}</span>
+              <span className="sunat-stat-label">XMLs en Drive</span>
+            </div>
+            {sunatStats.errores > 0 && (
+              <>
+                <div className="sunat-stat-divider" />
+                <div className="sunat-stat">
+                  <span className="sunat-stat-value sunat-err">{sunatStats.errores}</span>
+                  <span className="sunat-stat-label">Con error</span>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
