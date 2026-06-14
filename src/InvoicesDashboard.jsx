@@ -66,19 +66,37 @@ function InvoicesDashboard() {
     }
   };
 
-  const runSunat = () => {
-    if (runningSunat) return;
+  const runSunat = (intento = 1) => {
+    if (runningSunat && intento === 1) return;
     setRunningSunat(true);
-    setSunatLog([]);
-    setSunatProgress({ current: 0, total: 0 });
-    const tid = toast.loading('Conectando con SUNAT…');
+    if (intento === 1) { setSunatLog([]); setSunatProgress({ current: 0, total: 0 }); }
+    const tid = intento === 1
+      ? toast.loading('Conectando con SUNAT…')
+      : toast.loading(`Reintentando… (intento ${intento}/3)`);
     const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
     const es = new EventSource(`${API_URL}/run-sunat-stream`);
+    let recibioEvento = false;
+
+    const timeout = setTimeout(() => {
+      if (!recibioEvento) {
+        es.close();
+        if (intento < 3) {
+          toast.dismiss(tid);
+          runSunat(intento + 1);
+        } else {
+          setRunningSunat(false);
+          toast.error('SUNAT no respondió después de 3 intentos', { id: tid });
+        }
+      }
+    }, 30000);
 
     es.onmessage = (e) => {
+      recibioEvento = true;
+      clearTimeout(timeout);
       const data = JSON.parse(e.data);
       if (data.type === 'start') {
         setSunatProgress({ current: 0, total: data.total });
+        toast.loading(`Procesando ${data.total} comprobantes…`, { id: tid });
       } else if (data.type === 'progress') {
         setSunatProgress({ current: data.current, total: data.total });
         setSunatLog(prev => [...prev, data]);
@@ -95,15 +113,27 @@ function InvoicesDashboard() {
         fetchSunatRecords();
       } else if (data.error || data.type === 'error') {
         es.close();
-        setRunningSunat(false);
-        toast.error(data.error || data.msg || 'Error al ejecutar SUNAT', { id: tid });
+        clearTimeout(timeout);
+        if (intento < 3) {
+          toast.dismiss(tid);
+          setTimeout(() => runSunat(intento + 1), 3000);
+        } else {
+          setRunningSunat(false);
+          toast.error(data.error || data.msg || 'Error al ejecutar SUNAT', { id: tid });
+        }
       }
     };
 
     es.onerror = () => {
       es.close();
-      setRunningSunat(false);
-      toast.error('Error al ejecutar SUNAT', { id: tid });
+      clearTimeout(timeout);
+      if (intento < 3) {
+        toast.dismiss(tid);
+        setTimeout(() => runSunat(intento + 1), 3000);
+      } else {
+        setRunningSunat(false);
+        toast.error('Error al ejecutar SUNAT después de 3 intentos', { id: tid });
+      }
     };
   };
 
