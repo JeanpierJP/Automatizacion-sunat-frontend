@@ -421,6 +421,61 @@
 .sunat-xml { color: #34d399; }
 .sunat-err { color: #fb923c; }
 
+/* ── Panel progreso SUNAT ── */
+.sunat-progress-card {
+  margin-top: 1.5rem;
+  background: #1f2937;
+  border: 1px solid #374151;
+  border-radius: 12px;
+  padding: 1.25rem 1.75rem;
+}
+
+.sunat-progress-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #f59e0b;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-bottom: 0.75rem;
+}
+
+.sunat-progress-bar-wrap {
+  height: 5px;
+  background: #374151;
+  border-radius: 99px;
+  overflow: hidden;
+  margin-bottom: 1rem;
+}
+
+.sunat-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #f59e0b, #fbbf24);
+  border-radius: 99px;
+  transition: width 0.4s ease;
+}
+
+.sunat-log {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.sunat-log-item {
+  display: flex;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  font-family: 'JetBrains Mono', 'Courier New', monospace;
+  padding: 0.2rem 0;
+}
+
+.sunat-log-ok { color: #34d399; }
+.sunat-log-error { color: #f87171; }
+
 /* ── Responsive ── */
 @media (max-width: 860px) {
   .dashboard-container { padding: 1.25rem; }

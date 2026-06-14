@@ -28,6 +28,8 @@ function InvoicesDashboard() {
   const [editForm, setEditForm]         = useState({});
   const [sunatRecords, setSunatRecords] = useState([]);
   const [lastRunErrors, setLastRunErrors] = useState(null);
+  const [sunatLog, setSunatLog] = useState([]);
+  const [sunatProgress, setSunatProgress] = useState({ current: 0, total: 0 });
   const fileRef = useRef(null);
 
   const fetchInvoices = async () => {
@@ -64,27 +66,45 @@ function InvoicesDashboard() {
     }
   };
 
-  const runSunat = async () => {
+  const runSunat = () => {
+    if (runningSunat) return;
     setRunningSunat(true);
-    const tid = toast.loading('Conectando con SUNAT… esto puede tardar varios minutos');
-    try {
-      const { data } = await api.post('/run-sunat');
-      setLastRunErrors(data.errores || 0);
-      toast.success(
-        `✓ ${data.guardados} comprobante(s) descargados y guardados en Drive` +
-        (data.errores > 0 ? ` · ${data.errores} con error` : ''),
-        { id: tid, duration: 7000 }
-      );
-      fetchInvoices();
-      fetchSunatRecords();
-    } catch (err) {
-      toast.error(
-        err?.response?.data?.detail || 'Error al ejecutar SUNAT',
-        { id: tid }
-      );
-    } finally {
+    setSunatLog([]);
+    setSunatProgress({ current: 0, total: 0 });
+    const tid = toast.loading('Conectando con SUNAT…');
+    const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+    const es = new EventSource(`${API_URL}/run-sunat-stream`);
+
+    es.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      if (data.type === 'start') {
+        setSunatProgress({ current: 0, total: data.total });
+      } else if (data.type === 'progress') {
+        setSunatProgress({ current: data.current, total: data.total });
+        setSunatLog(prev => [...prev, data]);
+      } else if (data.type === 'done') {
+        es.close();
+        setRunningSunat(false);
+        setLastRunErrors(data.errores || 0);
+        toast.success(
+          `✓ ${data.guardados} comprobante(s) guardados en Drive` +
+          (data.errores > 0 ? ` · ${data.errores} con error` : ''),
+          { id: tid, duration: 7000 }
+        );
+        fetchInvoices();
+        fetchSunatRecords();
+      } else if (data.error || data.type === 'error') {
+        es.close();
+        setRunningSunat(false);
+        toast.error(data.error || data.msg || 'Error al ejecutar SUNAT', { id: tid });
+      }
+    };
+
+    es.onerror = () => {
+      es.close();
       setRunningSunat(false);
-    }
+      toast.error('Error al ejecutar SUNAT', { id: tid });
+    };
   };
 
   const handleUpload = async (e) => {
@@ -332,6 +352,30 @@ function InvoicesDashboard() {
           </table>
         </div>
       </div>
+      {/* ── Panel progreso SUNAT en vivo ── */}
+      {runningSunat && sunatProgress.total > 0 && (
+        <div className="sunat-progress-card">
+          <div className="sunat-progress-header">
+            <BoltIcon style={{ width: 15, height: 15, animation: 'spin 1s linear infinite' }} />
+            <span>Ejecutando SUNAT — {sunatProgress.current} / {sunatProgress.total}</span>
+          </div>
+          <div className="sunat-progress-bar-wrap">
+            <div className="sunat-progress-bar" style={{ width: `${(sunatProgress.current / sunatProgress.total) * 100}%` }} />
+          </div>
+          <div className="sunat-log">
+            {sunatLog.slice(-8).map((item, i) => (
+              <div key={i} className={`sunat-log-item sunat-log-${item.status}`}>
+                <span>{item.status === 'ok' ? '✓' : '✗'}</span>
+                <span>{item.serie}-{item.numero}
+                  {item.status === 'ok' && ` · ${item.pdf ? 'PDF' : ''}${item.pdf && item.xml ? '+' : ''}${item.xml ? 'XML' : ''}`}
+                  {item.status === 'error' && ` · ${item.msg}`}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* ── Panel resumen SUNAT ── */}
       {sunatStats.total > 0 && (
         <div className="sunat-summary-card">
