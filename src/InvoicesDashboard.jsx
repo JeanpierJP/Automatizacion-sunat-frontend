@@ -55,6 +55,18 @@ function InvoicesDashboard() {
 
   useEffect(() => { fetchInvoices(); fetchSunatRecords(); }, []);
 
+  const clearSunatRecords = async () => {
+    if (!window.confirm('¿Eliminar todos los registros SUNAT? Esta acción no se puede deshacer.')) return;
+    try {
+      await api.delete('/sunat-comprobantes');
+      toast.success('Registros SUNAT eliminados');
+      setSunatRecords([]);
+      setLastRunErrors(null);
+    } catch {
+      toast.error('Error al limpiar registros SUNAT');
+    }
+  };
+
   const clearInvoices = async () => {
     if (!window.confirm('¿Eliminar todos los registros de Extracciones? Esta acción no se puede deshacer.')) return;
     try {
@@ -413,6 +425,10 @@ function InvoicesDashboard() {
             <BoltIcon style={{ width: 15, height: 15 }} />
             <span>Última ejecución SUNAT</span>
             {sunatStats.fecha && <span className="sunat-fecha">{sunatStats.fecha}</span>}
+            <button className="btn btn-clear" style={{ marginLeft: 'auto' }} onClick={clearSunatRecords} title="Limpiar registros SUNAT">
+              <TrashIcon style={{ width: 14, height: 14, flexShrink: 0 }} />
+              Limpiar
+            </button>
           </div>
           <div className="sunat-summary-stats">
             <div className="sunat-stat">
